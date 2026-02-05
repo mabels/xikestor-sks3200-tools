@@ -1,6 +1,6 @@
 #!/usr/bin/env -S deno run --allow-read --allow-env --allow-net
 
-import { command, run as runBinary, string, option, boolean, flag, multioption } from "cmd-ts";
+import { command, run as runBinary, string, option, boolean, flag, multioption, array } from "cmd-ts";
 import { parse } from "@std/yaml";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
@@ -448,13 +448,13 @@ const cmd = command({
       defaultValue: () => false,
     }),
     switch: multioption({
-      type: string,
+      type: array(string),
       long: "switch",
       short: "s",
       description: "Filter by switch name (can be specified multiple times)",
     }),
     vlan: multioption({
-      type: string,
+      type: array(string),
       long: "vlan",
       short: "v",
       description: "Filter by VLAN ID or name (can be specified multiple times)",
