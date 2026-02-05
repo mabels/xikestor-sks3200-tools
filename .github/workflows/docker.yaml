@@ -22,4 +22,4 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           push: true
-          tags: ghcr.io/menabe/xikestor-sks3200-tools:latest
+          tags: ghcr.io/mabels/xikestor-sks3200-tools:latest
