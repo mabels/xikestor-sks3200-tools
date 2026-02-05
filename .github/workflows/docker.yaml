@@ -5,13 +5,17 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  docker:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
         with:
@@ -21,5 +25,40 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/mabels/xikestor-sks3200-tools:latest
+
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Compile binaries
+        run: |
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            arch=${target%%-*}
+            deno compile --no-check --allow-net --allow-read --allow-env \
+              --target $target -o switch-stats-linux-$arch switch-stats.ts
+            deno compile --no-check --allow-net --allow-read --allow-env --allow-write \
+              --target $target -o vlan-transform-linux-$arch vlan-transform.ts
+          done
+
+      - name: Update latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest \
+            --title "Latest Build" \
+            --notes "Automated build from main branch" \
+            switch-stats-linux-x86_64 \
+            switch-stats-linux-aarch64 \
+            vlan-transform-linux-x86_64 \
+            vlan-transform-linux-aarch64
