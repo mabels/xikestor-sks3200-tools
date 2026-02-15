@@ -3,33 +3,27 @@
 import { command, run as runBinary, string, option, boolean, flag, multioption, array } from "cmd-ts";
 import { parse } from "@std/yaml";
 import { readFile } from "node:fs/promises";
-import { z } from "zod";
+import { type } from "arktype";
 
-// Zod schemas for validation
-const VlanStatusSchema = z.enum(["tagged", "pvid"]);
+const PortSchema = type({ name: "string", template: "string" });
 
-const AuthConfigSchema = z.object({
-  type: z.enum(["xike"]),
-  user: z.string(),
-  pass: z.string(),
-  resp: z.string(),
+const VlanConfigSchema = type({
+  vlans: { "[string]": "string" },
+  templates: { "[string]": { "[string]": "'tagged' | 'pvid'" } },
+  switches: { "[string]": {
+    name: "string",
+    address: "string",
+    auth: {
+      type: "'xike'",
+      user: "string",
+      pass: "string",
+      resp: "string",
+    },
+    ports: PortSchema.array(),
+  } },
 });
 
-const VlanConfigSchema = z.object({
-  vlans: z.record(z.coerce.number(), z.string()),
-  templates: z.record(z.string(), z.record(z.coerce.number(), VlanStatusSchema)),
-  switches: z.record(z.string(), z.object({
-    name: z.string(),
-    address: z.string(),
-    auth: AuthConfigSchema,
-    ports: z.array(z.object({
-      name: z.string(),
-      template: z.string(),
-    })),
-  })),
-});
-
-type VlanConfig = z.infer<typeof VlanConfigSchema>;
+type VlanConfig = typeof VlanConfigSchema.infer;
 
 interface PortVlan {
   [vlanId: string]: "tagged" | "pvid" | "not-member";
@@ -481,16 +475,15 @@ const cmd = command({
       const content = await readFile(file, "utf-8");
       const rawConfig = parse(content);
 
-      // Validate with Zod
-      const parseResult = VlanConfigSchema.safeParse(rawConfig);
+      const parseResult = VlanConfigSchema(rawConfig);
 
-      if (!parseResult.success) {
+      if (parseResult instanceof type.errors) {
         console.error("Validation error in configuration file:");
-        console.error(parseResult.error.format());
+        console.error(parseResult.summary);
         Deno.exit(1);
       }
 
-      const config = parseResult.data;
+      const config = parseResult;
 
       // Apply filters (multioption returns arrays)
       const filteredConfig = filterConfig(

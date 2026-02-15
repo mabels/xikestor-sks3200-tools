@@ -1,5 +1,6 @@
-import { DOMParser } from "jsr:@b-fuze/deno-dom";
+import { DOMParser, initParser } from "jsr:@b-fuze/deno-dom/wasm-noinit";
 import { parse } from "jsr:@std/yaml@1";
+import { timeouted, unwrap, Lazy } from "jsr:@adviser/cement";
 
 interface SwitchConfig {
   name: string;
@@ -10,17 +11,22 @@ interface SwitchConfig {
 
 interface Config {
   switches: SwitchConfig[];
+  timeoutMs: number;
+  cacheMs: number;
 }
 
 function loadConfig(): Config {
   const configPath = Deno.env.get("VLANS_YAML") ?? "/config/vlans.yaml";
   const raw = parse(Deno.readTextFileSync(configPath)) as Record<string, unknown>;
+  const stats = (raw.stats ?? {}) as Record<string, unknown>;
   const switches = raw.switches as Record<string, {
     address: string;
     auth: { user: string; resp: string };
     ports: { name: string }[];
   }>;
   return {
+    timeoutMs: Number(stats.timeout_ms ?? 10_000),
+    cacheMs: Number(stats.cache_ms ?? 55_000),
     switches: Object.entries(switches).map(([name, sw]) => ({
       name,
       address: sw.address,
@@ -30,30 +36,34 @@ function loadConfig(): Config {
   };
 }
 
-const config = loadConfig();
-
-async function httpGet(hostname: string, path: string, cookie: string): Promise<string> {
-  const conn = await Deno.connect({ hostname, port: 80 });
-  const req =
-    `GET ${path} HTTP/1.1\r\nHost: ${hostname}\r\nCookie: ${cookie}\r\nConnection: close\r\n\r\n`;
-  await conn.write(new TextEncoder().encode(req));
-  const buf = new Uint8Array(4096);
-  let raw = "";
-  while (true) {
-    const n = await conn.read(buf);
-    if (n === null) break;
-    raw += new TextDecoder().decode(buf.subarray(0, n));
-  }
-  conn.close();
-  const bodyStart = raw.indexOf("\r\n\r\n");
-  if (bodyStart < 0) throw new Error("no HTTP body");
-  return raw.substring(bodyStart + 4);
+async function httpGet(hostname: string, path: string, cookie: string, timeoutMs: number): Promise<string> {
+  const result = await timeouted(async () => {
+    const conn = await Deno.connect({ hostname, port: 80 });
+    try {
+      const req =
+        `GET ${path} HTTP/1.1\r\nHost: ${hostname}\r\nCookie: ${cookie}\r\nConnection: close\r\n\r\n`;
+      await conn.write(new TextEncoder().encode(req));
+      const buf = new Uint8Array(4096);
+      let raw = "";
+      while (true) {
+        const n = await conn.read(buf);
+        if (n === null) break;
+        raw += new TextDecoder().decode(buf.subarray(0, n));
+      }
+      const bodyStart = raw.indexOf("\r\n\r\n");
+      if (bodyStart < 0) throw new Error("no HTTP body");
+      return raw.substring(bodyStart + 4);
+    } finally {
+      conn.close();
+    }
+  }, { timeout: timeoutMs });
+  return unwrap(result);
 }
 
-async function fetchStats(sw: SwitchConfig): Promise<string[]> {
+async function fetchStats(sw: SwitchConfig, timeoutMs: number): Promise<string[]> {
   let html: string;
   try {
-    html = await httpGet(sw.address, "/port.cgi?page=stats", sw.cookie);
+    html = await httpGet(sw.address, "/port.cgi?page=stats", sw.cookie, timeoutMs);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`${sw.name} (${sw.address}): fetch failed: ${msg}`);
@@ -104,9 +114,9 @@ async function fetchStats(sw: SwitchConfig): Promise<string[]> {
   return lines;
 }
 
-async function handleMetrics(): Promise<Response> {
+async function collectMetrics(config: Config): Promise<string> {
   const results = await Promise.allSettled(
-    config.switches.map((sw) => fetchStats(sw)),
+    config.switches.map((sw) => fetchStats(sw, config.timeoutMs)),
   );
 
   const lines: string[] = [];
@@ -121,14 +131,29 @@ async function handleMetrics(): Promise<Response> {
     }
   }
 
-  return new Response(lines.join("\n") + "\n", {
-    headers: { "Content-Type": "text/plain" },
+  return lines.join("\n") + "\n";
+}
+
+async function main() {
+  const config = loadConfig();
+  await initParser();
+
+  const cachedMetrics = Lazy(
+    () => collectMetrics(config),
+    { resetAfter: config.cacheMs },
+  );
+
+  Deno.serve({ port: 9100 }, async (req: Request) => {
+    const { pathname } = new URL(req.url);
+    if (pathname === "/metrics") {
+      const body = await cachedMetrics();
+      return new Response(body, {
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+    if (pathname === "/health") return new Response("ok\n");
+    return new Response("not found\n", { status: 404 });
   });
 }
 
-Deno.serve({ port: 9100 }, (req: Request) => {
-  const { pathname } = new URL(req.url);
-  if (pathname === "/metrics") return handleMetrics();
-  if (pathname === "/health") return new Response("ok\n");
-  return new Response("not found\n", { status: 404 });
-});
+main();

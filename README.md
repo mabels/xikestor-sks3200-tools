@@ -14,6 +14,16 @@ HTTP metrics exporter (InfluxDB line protocol) for Telegraf. Scrapes port statis
 
 Config via `VLANS_YAML` env var (default `/config/vlans.yaml`).
 
+Optional `stats` section in the YAML to tune polling behaviour:
+
+```yaml
+stats:
+  timeout_ms: 10000   # per-switch HTTP timeout (default 10 000)
+  cache_ms: 55000     # cache metrics for this long (default 55 000)
+```
+
+Uses `@adviser/cement` `Lazy(resetAfter)` so the switches are polled at most once per `cache_ms`; intermediate `/metrics` requests return the cached result. Uses `timeouted` to abort hanging switch connections after `timeout_ms`.
+
 ### vlan-transform
 
 CLI tool to transform a `vlans.yaml` config into VLAN membership and PVID configuration, then optionally apply it to switches via HTTP.
